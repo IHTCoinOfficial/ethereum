@@ -4,6 +4,7 @@ import './StandardToken.sol';
 import "./UpgradeableToken.sol";
 import "./ReleasableToken.sol";
 import "./MintableToken.sol";
+import "./BurnableToken.sol";
 
 
 /**
@@ -17,7 +18,7 @@ import "./MintableToken.sol";
  * - The token can be capped (supply set in the constructor) or uncapped (crowdsale contract can mint new tokens)
  *
  */
-contract CrowdsaleToken is ReleasableToken, MintableToken, UpgradeableToken {
+contract CrowdsaleToken is ReleasableToken, MintableToken, UpgradeableToken, BurnableToken {
 
   event UpdatedTokenInformation(string newName, string newSymbol);
 

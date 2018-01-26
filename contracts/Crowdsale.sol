@@ -92,6 +92,13 @@ contract Crowdsale is Allocatable, Haltable, SafeMathLib {
   /** This is for manul testing for the interaction from owner wallet. You can set it to any value and inspect this in blockchain explorer to see that crowdsale interaction works. */
   uint256 public ownerTestValue;
 
+  uint256 public earlyPariticipantWeiPrice = 86956521739130;
+
+  uint256 public whitelistBonusPercentage = 15;
+  uint256 public whitelistPrincipleLockPercentage = 50;
+  uint256 public whitelistBonusLockPeriod = 120;
+  uint256 public whitelistPrincipleLockPeriod = 180;
+
   /** State machine
    *
    * - Preparing: All contract initialization calls and variables have not been set yet
@@ -147,6 +154,7 @@ contract Crowdsale is Allocatable, Haltable, SafeMathLib {
 
     // Minimum funding goal can be zero
     minimumFundingGoal = _minimumFundingGoal;
+
   }
 
   /**
@@ -155,6 +163,16 @@ contract Crowdsale is Allocatable, Haltable, SafeMathLib {
   function() payable public {
     invest(msg.sender);
   }
+
+  /** Function to set default vesting schedule parameters. */
+    function setDefaultWhitelistVestingParameters(uint256 _bonusPercentage, uint256 _principleLockPercentage, uint256 _bonusLockPeriod, uint256 _principleLockPeriod, uint256 _earlyPariticipantWeiPrice) onlyAllocateAgent public {
+
+        whitelistBonusPercentage = _bonusPercentage;
+        whitelistPrincipleLockPercentage = _principleLockPercentage;
+        whitelistBonusLockPeriod = _bonusLockPeriod;
+        whitelistPrincipleLockPeriod = _principleLockPeriod;
+        earlyPariticipantWeiPrice = _earlyPariticipantWeiPrice;
+    }
 
   /**
    * Make an investment.
@@ -168,49 +186,96 @@ contract Crowdsale is Allocatable, Haltable, SafeMathLib {
    */
   function investInternal(address receiver, uint128 customerId) stopInEmergency private {
 
+    uint256 tokenAmount;
+    uint256 weiAmount = msg.value;
     // Determine if it's a good time to accept investment from this participant
-    if(getState() == State.PreFunding) {
-      // Are we whitelisted for early deposit
-      require(earlyParticipantWhitelist[receiver]);
-      uint256 multiplier = 10 ** token.decimals();
-      require(msg.value >= safeMul(15,multiplier) && msg.value <= safeMul(50,multiplier));
+    if (getState() == State.PreFunding) {
+        // Are we whitelisted for early deposit
+        require(earlyParticipantWhitelist[receiver]);
+        require(weiAmount >= safeMul(1, uint(10) ** 18));
+        require(weiAmount <= safeMul(3, uint(10) ** 18));
+        tokenAmount = safeDiv(safeMul(weiAmount, uint(10) ** token.decimals()), earlyPariticipantWeiPrice);
+        
+        if (investedAmountOf[receiver] == 0) {
+          // A new investor
+          investorCount++;
+        }
+
+        // Update investor
+        investedAmountOf[receiver] = safeAdd(investedAmountOf[receiver],weiAmount);
+        tokenAmountOf[receiver] = safeAdd(tokenAmountOf[receiver],tokenAmount);
+
+        // Update totals
+        weiRaised = safeAdd(weiRaised,weiAmount);
+        tokensSold = safeAdd(tokensSold,tokenAmount);
+
+        // Check that we did not bust the cap
+        require(!isBreakingCap(weiAmount, tokenAmount, weiRaised, tokensSold));
+
+        if (safeAdd(whitelistPrincipleLockPercentage,whitelistBonusPercentage) > 0) {
+
+            uint256 principleAmount = safeDiv(safeMul(tokenAmount, 100), safeAdd(whitelistBonusPercentage, 100));
+            uint256 bonusLockAmount = safeDiv(safeMul(whitelistBonusPercentage, principleAmount), 100);
+            uint256 principleLockAmount = safeDiv(safeMul(whitelistPrincipleLockPercentage, principleAmount), 100);
+
+            uint256 totalLockAmount = safeAdd(principleLockAmount, bonusLockAmount);
+            TokenVesting tokenVesting = TokenVesting(tokenVestingAddress);
+            
+            // to prevent minting of tokens which will be useless as vesting amount cannot be updated
+            require(!tokenVesting.isVestingSet(receiver));
+            require(totalLockAmount <= tokenAmount);
+            assignTokens(tokenVestingAddress,totalLockAmount);
+            
+            // set vesting with default schedule
+            tokenVesting.setVesting(receiver, principleLockAmount, whitelistPrincipleLockPeriod, bonusLockAmount, whitelistBonusLockPeriod); 
+        }
+
+        // assign remaining tokens to contributor
+        if (tokenAmount - totalLockAmount > 0) {
+            assignTokens(receiver, tokenAmount - totalLockAmount);
+        }
+
+        // Pocket the money
+        require(multisigWallet.send(weiAmount));
+
+        // Tell us invest was success
+        Invested(receiver, weiAmount, tokenAmount, customerId);       
+
     
     } else if(getState() == State.Funding) {
-      // Retail participants can only come in when the crowdsale is running
+        // Retail participants can only come in when the crowdsale is running
+        tokenAmount = pricingStrategy.calculatePrice(weiAmount, weiRaised, tokensSold, msg.sender, token.decimals());
+        require(tokenAmount != 0);
+
+
+        if(investedAmountOf[receiver] == 0) {
+          // A new investor
+          investorCount++;
+        }
+
+        // Update investor
+        investedAmountOf[receiver] = safeAdd(investedAmountOf[receiver],weiAmount);
+        tokenAmountOf[receiver] = safeAdd(tokenAmountOf[receiver],tokenAmount);
+
+        // Update totals
+        weiRaised = safeAdd(weiRaised,weiAmount);
+        tokensSold = safeAdd(tokensSold,tokenAmount);
+
+        // Check that we did not bust the cap
+        require(!isBreakingCap(weiAmount, tokenAmount, weiRaised, tokensSold));
+
+        assignTokens(receiver, tokenAmount);
+
+        // Pocket the money
+        require(multisigWallet.send(weiAmount));
+
+        // Tell us invest was success
+        Invested(receiver, weiAmount, tokenAmount, customerId);
+
     } else {
       // Unwanted state
       require(false);
     }
-
-    uint weiAmount = msg.value;
-    uint tokenAmount = pricingStrategy.calculatePrice(weiAmount, weiRaised, tokensSold, msg.sender, token.decimals());
-
-    require(tokenAmount != 0);
-
-
-    if(investedAmountOf[receiver] == 0) {
-       // A new investor
-       investorCount++;
-    }
-
-    // Update investor
-    investedAmountOf[receiver] = safeAdd(investedAmountOf[receiver],weiAmount);
-    tokenAmountOf[receiver] = safeAdd(tokenAmountOf[receiver],tokenAmount);
-
-    // Update totals
-    weiRaised = safeAdd(weiRaised,weiAmount);
-    tokensSold = safeAdd(tokensSold,tokenAmount);
-
-    // Check that we did not bust the cap
-    require(!isBreakingCap(weiAmount, tokenAmount, weiRaised, tokensSold));
-
-    assignTokens(receiver, tokenAmount);
-
-    // Pocket the money
-    require(multisigWallet.send(weiAmount));
-
-    // Tell us invest was success
-    Invested(receiver, weiAmount, tokenAmount, customerId);
   }
 
   /**
@@ -231,7 +296,7 @@ contract Crowdsale is Allocatable, Haltable, SafeMathLib {
 
 
     uint256 weiAmount = (weiPrice * tokenAmount)/10**uint256(token.decimals()); // This can be also 0, we give out tokens for free
-
+    // uint256 totalLockAmount = 0;
     weiRaised = safeAdd(weiRaised,weiAmount);
     tokensSold = safeAdd(tokensSold,tokenAmount);
 
@@ -241,16 +306,9 @@ contract Crowdsale is Allocatable, Haltable, SafeMathLib {
     // cannot lock more than total tokens
     uint256 totalLockAmount = safeAdd(principleLockAmount, bonusLockAmount);
     require(totalLockAmount <= tokenAmount);
-    
+
     // assign locked token to Vesting contract
     if (totalLockAmount > 0) {
-
-      if (principleLockAmount > 0) {
-        require(principleLockPeriod > 0);
-      }
-      if (bonusLockAmount > 0) {
-        require(bonusLockPeriod > 0);
-      }
 
       TokenVesting tokenVesting = TokenVesting(tokenVestingAddress);
       
@@ -360,7 +418,7 @@ contract Crowdsale is Allocatable, Haltable, SafeMathLib {
    *
    * TODO: Fix spelling error in the name
    */
-  function setEarlyParicipantWhitelist(address addr, bool status) public onlyOwner {
+  function setEarlyParicipantWhitelist(address addr, bool status) public onlyAllocateAgent {
     earlyParticipantWhitelist[addr] = status;
     Whitelisted(addr, status);
   }
