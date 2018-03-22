@@ -126,6 +126,9 @@ contract Crowdsale is Allocatable, Haltable, SafeMathLib {
   // Crowdsale end time has been changed
   event EndsAtChanged(uint256 endAt);
 
+  // Crowdsale start time has been changed
+  event StartAtChanged(uint256 endsAt);
+
   function Crowdsale(address _token, PricingStrategy _pricingStrategy, address _multisigWallet, 
   uint256 _start, uint256 _end, uint256 _minimumFundingGoal, address _tokenVestingAddress) public 
   {
@@ -192,8 +195,8 @@ contract Crowdsale is Allocatable, Haltable, SafeMathLib {
     if (getState() == State.PreFunding) {
         // Are we whitelisted for early deposit
         require(earlyParticipantWhitelist[receiver]);
-        // require(weiAmount >= safeMul(15, uint(10 ** 18)));
-        // require(weiAmount <= safeMul(50, uint(10 ** 18)));
+        require(weiAmount >= safeMul(15, uint(10 ** 18)));
+        require(weiAmount <= safeMul(50, uint(10 ** 18)));
         tokenAmount = safeDiv(safeMul(weiAmount, uint(10) ** token.decimals()), earlyPariticipantWeiPrice);
         
         if (investedAmountOf[receiver] == 0) {
@@ -452,6 +455,21 @@ contract Crowdsale is Allocatable, Haltable, SafeMathLib {
 
     endsAt = time;
     EndsAtChanged(endsAt);
+  }
+  /**
+   * Allow crowdsale owner to begin early or extend the crowdsale.
+   *
+   * This is useful e.g. for a manual soft cap implementation:
+   * - after X amount is reached determine manual closing
+   *
+   * This may put the crowdsale to an invalid state,
+   * but we trust owners know what they are doing.
+   *
+   */
+  function setStartAt(uint time) public onlyOwner {
+
+    startsAt = time;
+    StartAtChanged(endsAt);
   }
 
   /**
